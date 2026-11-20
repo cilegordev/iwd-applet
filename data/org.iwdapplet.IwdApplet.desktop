@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=IWD Applet
+Comment=Wi-Fi tray applet for iwd
+Exec=iwd-applet
+Icon=network-wireless
+Terminal=false
+Categories=Network;GTK;
+Keywords=wifi;wireless;iwd;
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

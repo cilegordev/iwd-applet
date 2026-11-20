@@ -1,0 +1,4 @@
+option('notify', type: 'feature', value: 'auto',
+  description: 'Desktop notifications via libnotify')
+option('tray', type: 'combo', choices: ['sni', 'appindicator', 'statusicon'], value: 'sni',
+  description: 'Tray backend: sni (direct StatusNotifierItem), appindicator (libappindicator, single menu) or statusicon (GtkStatusIcon/XEmbed, X11 only, both menus drawn by the applet)')
