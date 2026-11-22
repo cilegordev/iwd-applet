@@ -4,7 +4,7 @@ A small Wi-Fi tray applet for [iwd](https://iwd.wiki.kernel.org/), written in C 
 It talks to iwd over D-Bus and lets you pick a network, enter passwords, and manage saved
 networks straight from the system tray.
 
-> **Status:** stable. Version 0.2.1 is ready for daily use see [Known limitations](#known-limitations) for what is not implemented yet.
+> **Status:** stable. Version 0.2.2 is ready for daily use; see [Known limitations](#known-limitations) for what is not implemented yet.
 
 ## Features
 
@@ -18,13 +18,14 @@ networks straight from the system tray.
 - Long lists are split into columns instead of scrolling, so nothing is hidden
 - An About dialog showing the version and the library versions the applet was built with
 - Optional desktop notifications (libnotify)
+- `iwtui`: a text-mode interface that runs in any terminal (see [iwtui](#iwtui))
 
 ## Requirements
 
 | | |
 |---|---|
 | Build tools | a C compiler, [Meson](https://mesonbuild.com/) ≥ 0.60, Ninja, pkg-config |
-| Libraries (pkg-config modules) | `gtk+-3.0` ≥ 3.24, `gio-unix-2.0` ≥ 2.74, `dbusmenu-glib-0.4` (default backend), `libnotify` (optional) |
+| Libraries (pkg-config modules) | `gtk+-3.0` ≥ 3.24, `gio-unix-2.0` ≥ 2.74, `dbusmenu-glib-0.4` (default backend), `libnotify` (optional), `ncursesw` (optional, for `iwtui`) |
 | Runtime | `iwd`, D-Bus, an icon theme that provides the standard `network-wireless-*` icons (for example Adwaita) |
 
 You also need something that assigns IP addresses, for example `systemd-networkd`, `dhcpcd`, or
@@ -35,15 +36,15 @@ Example commands to install the dependencies (package names can differ between r
 ```sh
 # Debian / Ubuntu
 sudo apt install build-essential meson ninja-build pkg-config libgtk-3-dev \
-                 libdbusmenu-glib-dev libnotify-dev desktop-file-utils iwd
+                 libdbusmenu-glib-dev libnotify-dev libncurses-dev desktop-file-utils iwd
 
 # Fedora
 sudo dnf install gcc meson ninja-build pkgconf-pkg-config gtk3-devel \
-                 libdbusmenu-devel libnotify-devel desktop-file-utils iwd
+                 libdbusmenu-devel libnotify-devel ncurses-devel desktop-file-utils iwd
 
 # Arch Linux
 sudo pacman -S --needed base-devel meson pkgconf gtk3 libdbusmenu-glib \
-                 libnotify desktop-file-utils iwd
+                 libnotify ncurses desktop-file-utils iwd
 ```
 
 ## Building
@@ -51,7 +52,8 @@ sudo pacman -S --needed base-devel meson pkgconf gtk3 libdbusmenu-glib \
 ```sh
 meson setup --prefix=/usr build
 ninja -C build
-./build/iwd-applet            # try it out without installing
+./build/iwd-applet            # try the tray applet without installing
+./build/iwtui                 # try the text-mode interface
 sudo ninja -C build install   # also installs an autostart entry
 ```
 
@@ -61,6 +63,24 @@ Build options:
 |---|---|---|---|
 | `-Dtray` | `sni`, `appindicator`, `statusicon` | `sni` | Tray backend, see below |
 | `-Dnotify` | `auto`, `enabled`, `disabled` | `auto` | Desktop notifications via libnotify |
+| `-Dtui` | `auto`, `enabled`, `disabled` | `auto` | Build `iwtui` (needs ncursesw); skipped automatically if ncursesw is missing |
+
+## iwtui
+
+`iwtui` is a text-mode interface for iwd. It runs in any terminal, including a plain console
+without a graphical session, and does not need GTK. It has a black background and three entries:
+
+1. **Connect to a Wi-Fi network**: shows the networks found; pick one and, if it needs a password,
+   type it right there
+2. **Turn Wi-Fi on / off**
+3. **Exit**
+
+Keys: `Up`/`Down` (or `j`/`k`) select, `Enter` confirms, `Esc` goes back, `r` rescans in the network
+list, `Tab` shows or hides the password while typing, `q` exits.
+
+To ask for a password, `iwtui` registers itself as iwd's agent. If another program has already
+registered an agent (for example the tray applet), `iwtui` can still connect to open and saved
+networks, but it cannot ask for a new password until that program is closed.
 
 ## Tray backends
 
@@ -88,8 +108,8 @@ icons is up to the tray and cannot be changed by the applet.
 
 ## Known limitations
 
-- Not implemented yet: 802.1x / EAP, sharing a network as a QR code, access point mode.
-- While you are connected, iwd does not scan periodically, so the list can be stale use
+- Not implemented yet: 802.1x / EAP, hidden networks in `iwtui`, sharing a network as a QR code, access point mode.
+- While you are connected, iwd does not scan periodically, so the list can be stale; use
   **Rescan** to refresh it.
 - **Forget Network** only lists saved networks that are currently in range.
 - Menu placement was verified on X11 only.
