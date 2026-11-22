@@ -1,5 +1,5 @@
 project('iwd-applet', 'c',
-  version: '0.2.1',
+  version: '0.2.2',
   license: 'GPL-3.0-or-later',
   meson_version: '>= 0.60.0',
   default_options: ['c_std=gnu11', 'warning_level=2'])
@@ -16,6 +16,7 @@ gio_dep          = dependency('gio-unix-2.0', version: '>= 2.74')
 notify_dep       = dependency('libnotify', required: get_option('notify'))
 appindicator_dep = dependency('appindicator3-0.1', required: tray_backend == 'appindicator')
 dbusmenu_dep     = dependency('dbusmenu-glib-0.4', required: tray_backend == 'sni')
+ncurses_dep      = dependency('ncursesw', required: get_option('tui'))
 
 conf = configuration_data()
 conf.set('HAVE_LIBNOTIFY', notify_dep.found())
@@ -57,6 +58,15 @@ executable('iwd-applet', sources,
   dependencies: deps,
   include_directories: include_directories('.'),
   install: true)
+
+# iwtui: text-mode interface. It shares the iwd client with the tray applet but needs no GTK.
+if ncurses_dep.found()
+  executable('iwtui',
+    files('src/iwtui.c', 'src/iwtui-agent.c', 'src/iwd-client.c'),
+    dependencies: [gio_dep, ncurses_dep],
+    include_directories: include_directories('.'),
+    install: true)
+endif
 
 desktop_file = 'data/org.iwdapplet.IwdApplet.desktop'
 install_data(desktop_file, install_dir: get_option('datadir') / 'applications')
