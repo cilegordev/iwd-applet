@@ -447,6 +447,66 @@ void iwd_client_connect_hidden(IwdClient *c, const char *ssid)
                       G_DBUS_CALL_FLAGS_NONE, 120000, NULL, call_done, c);
 }
 
+void iwd_client_forget_async(IwdClient *c, const char *known_path,
+                             IwdDoneFunc done, gpointer user_data)
+{
+  GDBusProxy *kp = c->mgr ? (GDBusProxy *) g_dbus_object_manager_get_interface(c->mgr, known_path, IF_KNOWN)
+                          : NULL;
+  if (!kp) {
+    done(c, c->mgr ? "Network not found" : "iwd is not running", user_data);
+    return;
+  }
+
+  ConnectCtx *ctx = g_new0(ConnectCtx, 1);
+  ctx->client = c;
+  ctx->done = done;
+  ctx->data = user_data;
+  g_dbus_proxy_call(kp, "Forget", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, connect_finished, ctx);
+  g_object_unref(kp);
+}
+
+static void known_free(gpointer p)
+{
+  IwdKnownNetwork *k = p;
+  g_free(k->path);
+  g_free(k->name);
+  g_free(k->type);
+  g_free(k);
+}
+
+static gint known_compare(gconstpointer a, gconstpointer b)
+{
+  const IwdKnownNetwork *ka = *(IwdKnownNetwork * const *) a;
+  const IwdKnownNetwork *kb = *(IwdKnownNetwork * const *) b;
+  return g_utf8_collate(ka->name ? ka->name : "", kb->name ? kb->name : "");
+}
+
+GPtrArray *iwd_client_list_known_networks(IwdClient *c)
+{
+  GPtrArray *list = g_ptr_array_new_with_free_func(known_free);
+
+  if (!c->mgr)
+    return list;
+
+  GList *objs = g_dbus_object_manager_get_objects(c->mgr);
+  for (GList *l = objs; l; l = l->next) {
+    GDBusProxy *kp = (GDBusProxy *) g_dbus_object_get_interface(l->data, IF_KNOWN);
+    if (!kp)
+      continue;
+
+    IwdKnownNetwork *k = g_new0(IwdKnownNetwork, 1);
+    k->path = g_strdup(g_dbus_proxy_get_object_path(kp));
+    k->name = prop_string(kp, "Name");
+    k->type = prop_string(kp, "Type");
+    g_ptr_array_add(list, k);
+    g_object_unref(kp);
+  }
+  g_list_free_full(objs, g_object_unref);
+
+  g_ptr_array_sort(list, known_compare);
+  return list;
+}
+
 void iwd_client_forget(IwdClient *c, const char *known_path)
 {
   if (!c->mgr || !known_path)

@@ -1,8 +1,9 @@
 /* iwtui: a small text-mode interface for iwd.
  *
  *   1. Connect to a Wi-Fi network (the password is asked for right there)
- *   2. Turn Wi-Fi on or off
- *   3. Exit
+ *   2. Forget a saved network
+ *   3. Turn Wi-Fi on or off
+ *   4. Exit
  *
  * It talks to iwd through the same D-Bus client as the tray applet, and registers its own iwd
  * agent so that it can hand the typed password to iwd. The screen uses a plain black
@@ -28,6 +29,8 @@
 #define MIN_COLS  44
 #define MIN_LINES 12
 #define MAX_PASSWORD_BYTES 120
+#define MIN_PASSWORD_CHARS 8   /* shortest valid WPA passphrase */
+#define MAIN_ROWS 4
 
 enum { CP_NORMAL = 1, CP_SELECT, CP_OK, CP_ERROR, CP_HINT };
 
@@ -36,6 +39,8 @@ typedef enum {
   SCREEN_NETWORKS,
   SCREEN_PASSWORD,
   SCREEN_BUSY,
+  SCREEN_FORGET,
+  SCREEN_CONFIRM,
   SCREEN_MESSAGE
 } Screen;
 
@@ -61,6 +66,15 @@ typedef struct {
   gboolean had_password;
   GString *password;
   gboolean show_password;
+  gboolean password_short;  /* Enter was pressed with a password that is too short */
+
+  gchar *busy_text;
+
+  gchar *forget_sel_path;   /* selected saved network, by object path */
+  gint forget_top;          /* first visible row of the saved-network list */
+  gchar *forget_path;       /* network being forgotten */
+  gchar *forget_name;
+  gint confirm_sel;         /* 0 = Forget, 1 = Cancel */
 
   Screen after_message;
   MsgKind msg_kind;
@@ -215,7 +229,7 @@ static void draw_status(Ui *ui, WINDOW *win, int y, int x, int width)
 
 static void draw_main(Ui *ui)
 {
-  const int w = 48, h = 11;
+  const int w = 48, h = 12;
   IwdState st = iwd_client_get_state(ui->client);
   WINDOW *win = make_win(h, w, "iwtui");
 
@@ -227,12 +241,13 @@ static void draw_main(Ui *ui)
     g_free(note);
   }
 
-  const char *labels[3] = {
+  const char *labels[MAIN_ROWS] = {
     "Connect to a Wi-Fi network",
+    "Forget a saved network",
     st == IWD_STATE_OFF ? "Turn Wi-Fi on" : "Turn Wi-Fi off",
     "Exit"
   };
-  for (int i = 0; i < 3; i++)
+  for (int i = 0; i < MAIN_ROWS; i++)
     put_row(win, 5 + i, 3, w - 6, i == ui->main_sel ? attr_select() : attr_normal(), labels[i]);
 
   put(win, h - 2, 3, attr_hint(), "Up/Down: select   Enter: confirm   q: exit", w - 6);
@@ -331,7 +346,7 @@ static void draw_networks(Ui *ui)
 
 static void draw_password(Ui *ui)
 {
-  const int w = MIN(COLS - 2, 56), h = 9;
+  const int w = MIN(COLS - 2, 56), h = 10;
   int cols = w - 6;
   WINDOW *win = make_win(h, w, "Wi-Fi password");
 
@@ -361,6 +376,16 @@ static void draw_password(Ui *ui)
   g_free(text);
   g_string_free(shown, TRUE);
 
+  if (ui->password_short) {
+    gchar *msg = g_strdup_printf("Password must be at least %d characters.", MIN_PASSWORD_CHARS);
+    put(win, 5, 3, attr_error(), msg, cols);
+    g_free(msg);
+  } else {
+    gchar *msg = g_strdup_printf("At least %d characters (%ld typed)", MIN_PASSWORD_CHARS, n);
+    put(win, 5, 3, attr_hint(), msg, cols);
+    g_free(msg);
+  }
+
   put(win, h - 3, 3, attr_hint(), "Enter: connect   Tab: show/hide   Esc: cancel", cols);
   finish_win(win);
 }
@@ -369,7 +394,7 @@ static void draw_busy(Ui *ui)
 {
   const int w = MIN(COLS - 2, 50), h = 5;
   WINDOW *win = make_win(h, w, "Please wait");
-  gchar *line = g_strdup_printf("Connecting to %s...", ui->target_name ? ui->target_name : "?");
+  gchar *line = g_strdup(ui->busy_text ? ui->busy_text : "Please wait...");
 
   put(win, 2, 3, attr_normal(), line, w - 6);
   g_free(line);
@@ -394,6 +419,116 @@ static void draw_message(Ui *ui)
   finish_win(win);
 }
 
+static int known_index(Ui *ui, GPtrArray *known)
+{
+  if (known->len == 0)
+    return -1;
+  if (ui->forget_sel_path) {
+    for (guint i = 0; i < known->len; i++) {
+      IwdKnownNetwork *k = g_ptr_array_index(known, i);
+      if (g_str_equal(k->path, ui->forget_sel_path))
+        return (int) i;
+    }
+  }
+  return 0;
+}
+
+static void known_select(Ui *ui, GPtrArray *known, int idx)
+{
+  if (known->len == 0)
+    return;
+  idx = CLAMP(idx, 0, (int) known->len - 1);
+  IwdKnownNetwork *k = g_ptr_array_index(known, idx);
+  g_free(ui->forget_sel_path);
+  ui->forget_sel_path = g_strdup(k->path);
+}
+
+static void draw_forget(Ui *ui)
+{
+  GPtrArray *known = iwd_client_list_known_networks(ui->client);
+  const char *connected = iwd_client_get_connected_name(ui->client);
+  int w = MIN(COLS - 2, 64);
+  int h = MIN(LINES - 2, MAX((int) known->len, 3) + 7);
+  int list_h = h - 6;
+  int cols = w - 6;
+  WINDOW *win = make_win(h, w, "Forget a saved network");
+
+  gchar *status = g_strdup_printf("%u saved network%s", known->len, known->len == 1 ? "" : "s");
+  put(win, 1, 3, attr_normal(), status, cols);
+  g_free(status);
+
+  int idx = known_index(ui, known);
+  if (idx >= 0 && !ui->forget_sel_path)
+    known_select(ui, known, idx);
+
+  if (idx >= 0) {
+    if (idx < ui->forget_top)
+      ui->forget_top = idx;
+    if (idx >= ui->forget_top + list_h)
+      ui->forget_top = idx - list_h + 1;
+  }
+  ui->forget_top = MAX(0, MIN(ui->forget_top, (int) known->len - list_h));
+
+  if (known->len == 0)
+    put(win, 3, 3, attr_normal(), "No saved networks.", cols);
+
+  const int kind_w = 20;
+  int name_w = MAX(cols - 2 - 1 - kind_w, 6);
+
+  for (int row = 0; row < list_h; row++) {
+    int i = ui->forget_top + row;
+    if (i >= (int) known->len)
+      break;
+
+    IwdKnownNetwork *k = g_ptr_array_index(known, i);
+    gboolean is_connected = connected && k->name && g_str_equal(connected, k->name);
+    const char *kind = g_strcmp0(k->type, "open") == 0 ? "open"
+                       : g_strcmp0(k->type, "8021x") == 0 ? "802.1x"
+                       : "secured";
+    gchar *name = pad(k->name ? k->name : "?", name_w);
+    gchar *kind_text = g_strdup_printf("%s%s", kind, is_connected ? " (connected)" : "");
+    gchar *kind_pad = pad(kind_text, kind_w);
+    gchar *line = g_strdup_printf("  %s %s", name, kind_pad);
+
+    put_row(win, 3 + row, 3, cols, i == idx ? attr_select() : attr_normal(), line);
+
+    g_free(name); g_free(kind_text); g_free(kind_pad); g_free(line);
+  }
+
+  if (known->len > (guint) list_h) {
+    if (ui->forget_top > 0)
+      put(win, 2, w - 5, attr_hint(), "^", 1);
+    if (ui->forget_top + list_h < (int) known->len)
+      put(win, h - 4, w - 5, attr_hint(), "v", 1);
+  }
+
+  put(win, h - 2, 3, attr_hint(), "Enter: forget   Esc: back", cols);
+  g_ptr_array_unref(known);
+  finish_win(win);
+}
+
+static void draw_confirm(Ui *ui)
+{
+  const int w = MIN(COLS - 2, 58);
+  gchar *msg = g_strdup_printf("Forget \"%s\"? Its saved password and settings will be removed.",
+                               ui->forget_name ? ui->forget_name : "?");
+  GPtrArray *lines = wrap_text(msg, w - 6);
+  int n = MIN((int) lines->len, MAX(LINES - 10, 1));
+  int h = n + 8;
+  WINDOW *win = make_win(h, w, "Forget network");
+  const char *options[2] = { "Forget", "Cancel" };
+
+  for (int i = 0; i < n; i++)
+    put(win, 2 + i, 3, attr_normal(), g_ptr_array_index(lines, i), w - 6);
+  for (int i = 0; i < 2; i++)
+    put_row(win, n + 3 + i, 3, w - 6, i == ui->confirm_sel ? attr_select() : attr_normal(), options[i]);
+  put(win, h - 2, 3, attr_hint(), "Up/Down: select   Enter: confirm   y/n", w - 6);
+
+  g_ptr_array_unref(lines);
+  g_free(msg);
+  finish_win(win);
+}
+
 static void redraw(Ui *ui)
 {
   erase();
@@ -413,6 +548,8 @@ static void redraw(Ui *ui)
   case SCREEN_NETWORKS: draw_networks(ui); break;
   case SCREEN_PASSWORD: draw_password(ui); break;
   case SCREEN_BUSY:     draw_busy(ui); break;
+  case SCREEN_FORGET:   draw_forget(ui); break;
+  case SCREEN_CONFIRM:  draw_confirm(ui); break;
   case SCREEN_MESSAGE:  draw_message(ui); break;
   }
   doupdate();
@@ -450,6 +587,12 @@ static void sanitize_screen(Ui *ui)
     ui->screen = SCREEN_MAIN;
   if (ui->screen == SCREEN_MESSAGE && ui->after_message == SCREEN_NETWORKS && st < IWD_STATE_DISCONNECTED)
     ui->after_message = SCREEN_MAIN;
+
+  /* Saved networks are only available while iwd is running. */
+  if ((ui->screen == SCREEN_FORGET || ui->screen == SCREEN_CONFIRM) && st == IWD_STATE_NO_DAEMON)
+    ui->screen = SCREEN_MAIN;
+  if (ui->screen == SCREEN_MESSAGE && ui->after_message == SCREEN_FORGET && st == IWD_STATE_NO_DAEMON)
+    ui->after_message = SCREEN_MAIN;
 }
 
 static void on_connect_done(IwdClient *c, const char *error, gpointer data)
@@ -472,6 +615,8 @@ static void start_connect(Ui *ui, const char *password)
 {
   ui->had_password = password != NULL;
   tui_agent_set_passphrase(ui->agent, ui->target_path, password);
+  g_free(ui->busy_text);
+  ui->busy_text = g_strdup_printf("Connecting to %s...", ui->target_name ? ui->target_name : "?");
   ui->screen = SCREEN_BUSY;
   iwd_client_connect_async(ui->client, ui->target_path, on_connect_done, ui);
 }
@@ -507,6 +652,7 @@ static void networks_connect_selected(Ui *ui)
     } else {
       wipe_password(ui);
       ui->show_password = FALSE;
+      ui->password_short = FALSE;
       ui->screen = SCREEN_PASSWORD;
     }
   } else {
@@ -514,6 +660,45 @@ static void networks_connect_selected(Ui *ui)
     start_connect(ui, NULL);
   }
   g_free(name);
+}
+
+static void on_forget_done(IwdClient *c, const char *error, gpointer data)
+{
+  Ui *ui = data;
+  const char *name = ui->forget_name ? ui->forget_name : "?";
+
+  if (error)
+    show_message(ui, MSG_ERROR, SCREEN_FORGET, "Could not forget \"%s\": %s", name, error);
+  else
+    show_message(ui, MSG_OK, SCREEN_FORGET, "Forgot \"%s\".", name);
+  sanitize_screen(ui);
+  redraw(ui);
+}
+
+static void start_forget(Ui *ui)
+{
+  g_free(ui->busy_text);
+  ui->busy_text = g_strdup_printf("Forgetting %s...", ui->forget_name ? ui->forget_name : "?");
+  ui->screen = SCREEN_BUSY;
+  iwd_client_forget_async(ui->client, ui->forget_path, on_forget_done, ui);
+}
+
+/* Enter on the saved-network list: ask for confirmation first. */
+static void forget_ask_selected(Ui *ui)
+{
+  GPtrArray *known = iwd_client_list_known_networks(ui->client);
+  int idx = known_index(ui, known);
+
+  if (idx >= 0) {
+    IwdKnownNetwork *k = g_ptr_array_index(known, idx);
+    g_free(ui->forget_path);
+    g_free(ui->forget_name);
+    ui->forget_path = g_strdup(k->path);
+    ui->forget_name = g_strdup(k->name ? k->name : "?");
+    ui->confirm_sel = 1; /* Cancel is the default: forgetting cannot be undone */
+    ui->screen = SCREEN_CONFIRM;
+  }
+  g_ptr_array_unref(known);
 }
 
 static void main_activate(Ui *ui)
@@ -536,6 +721,15 @@ static void main_activate(Ui *ui)
     }
     break;
   case 1:
+    if (st == IWD_STATE_NO_DAEMON) {
+      show_message(ui, MSG_ERROR, SCREEN_MAIN, "iwd is not running.");
+    } else {
+      g_clear_pointer(&ui->forget_sel_path, g_free);
+      ui->forget_top = 0;
+      ui->screen = SCREEN_FORGET;
+    }
+    break;
+  case 2:
     if (st == IWD_STATE_NO_DAEMON)
       show_message(ui, MSG_ERROR, SCREEN_MAIN, "iwd is not running.");
     else if (st == IWD_STATE_NO_DEVICE)
@@ -578,9 +772,9 @@ static void handle_key(Ui *ui, int rc, wint_t ch)
   switch (ui->screen) {
   case SCREEN_MAIN:
     if (key_is_up(rc, ch))
-      ui->main_sel = (ui->main_sel + 2) % 3;
+      ui->main_sel = (ui->main_sel + MAIN_ROWS - 1) % MAIN_ROWS;
     else if (key_is_down(rc, ch))
-      ui->main_sel = (ui->main_sel + 1) % 3;
+      ui->main_sel = (ui->main_sel + 1) % MAIN_ROWS;
     else if (key_is_enter(rc, ch))
       main_activate(ui);
     else if (rc == OK && ch == 'q')
@@ -614,7 +808,9 @@ static void handle_key(Ui *ui, int rc, wint_t ch)
 
   case SCREEN_PASSWORD:
     if (key_is_enter(rc, ch)) {
-      if (ui->password->len > 0) {
+      if (g_utf8_strlen(ui->password->str, -1) < MIN_PASSWORD_CHARS) {
+        ui->password_short = TRUE;
+      } else {
         start_connect(ui, ui->password->str);
         wipe_password(ui);
       }
@@ -629,12 +825,53 @@ static void handle_key(Ui *ui, int rc, wint_t ch)
         const gchar *prev = g_utf8_prev_char(end);
         explicit_bzero((gchar *) prev, end - prev);
         g_string_truncate(ui->password, prev - ui->password->str);
+        ui->password_short = FALSE;
       }
     } else if (rc == OK && iswprint(ch) && ui->password->len < MAX_PASSWORD_BYTES) {
       gchar utf8[8];
       gint len = g_unichar_to_utf8((gunichar) ch, utf8);
       g_string_append_len(ui->password, utf8, len);
+      ui->password_short = FALSE;
     }
+    break;
+
+  case SCREEN_FORGET: {
+    GPtrArray *known = iwd_client_list_known_networks(ui->client);
+    int idx = known_index(ui, known);
+
+    if (key_is_up(rc, ch))
+      known_select(ui, known, idx - 1);
+    else if (key_is_down(rc, ch))
+      known_select(ui, known, idx + 1);
+    else if (rc == KEY_CODE_YES && ch == KEY_HOME)
+      known_select(ui, known, 0);
+    else if (rc == KEY_CODE_YES && ch == KEY_END)
+      known_select(ui, known, (int) known->len - 1);
+    else if (rc == KEY_CODE_YES && ch == KEY_PPAGE)
+      known_select(ui, known, idx - 8);
+    else if (rc == KEY_CODE_YES && ch == KEY_NPAGE)
+      known_select(ui, known, idx + 8);
+    else if (key_is_enter(rc, ch))
+      forget_ask_selected(ui);
+    else if (key_is_back(rc, ch))
+      ui->screen = SCREEN_MAIN;
+    g_ptr_array_unref(known);
+    break;
+  }
+
+  case SCREEN_CONFIRM:
+    if (key_is_up(rc, ch) || key_is_down(rc, ch))
+      ui->confirm_sel = !ui->confirm_sel;
+    else if (key_is_enter(rc, ch)) {
+      if (ui->confirm_sel == 0)
+        start_forget(ui);
+      else
+        ui->screen = SCREEN_FORGET;
+    }
+    else if (rc == OK && (ch == 'y' || ch == 'Y'))
+      start_forget(ui);
+    else if (rc == OK && (ch == 'n' || ch == 'N' || ch == 27))
+      ui->screen = SCREEN_FORGET;
     break;
 
   case SCREEN_BUSY:
@@ -734,7 +971,7 @@ int main(int argc, char **argv)
     if (g_str_equal(argv[i], "--help") || g_str_equal(argv[i], "-h")) {
       printf("Usage: iwtui [--version] [--help]\n\n"
              "A text-mode interface for iwd: connect to a Wi-Fi network (with password entry),\n"
-             "turn Wi-Fi on or off, and exit.\n\n"
+             "forget a saved network, turn Wi-Fi on or off, and exit.\n\n"
              "Keys: Up/Down (or j/k) select, Enter confirm, Esc go back, q exit.\n");
       return 0;
     }
@@ -794,6 +1031,10 @@ int main(int argc, char **argv)
   g_free(ui.target_path);
   g_free(ui.target_name);
   g_free(ui.msg_text);
+  g_free(ui.busy_text);
+  g_free(ui.forget_sel_path);
+  g_free(ui.forget_path);
+  g_free(ui.forget_name);
   g_main_loop_unref(ui.loop);
   return 0;
 }

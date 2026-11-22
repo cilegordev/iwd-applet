@@ -68,15 +68,17 @@ Build options:
 ## iwtui
 
 `iwtui` is a text-mode interface for iwd. It runs in any terminal, including a plain console
-without a graphical session, and does not need GTK. It has a black background and three entries:
+without a graphical session, and does not need GTK. It has a black background and four entries:
 
 1. **Connect to a Wi-Fi network**: shows the networks found; pick one and, if it needs a password,
-   type it right there
-2. **Turn Wi-Fi on / off**
-3. **Exit**
+   type it right there (at least 8 characters)
+2. **Forget a saved network**: lists every saved network, including ones that are out of range, and
+   removes the one you pick after a confirmation
+3. **Turn Wi-Fi on / off**
+4. **Exit**
 
 Keys: `Up`/`Down` (or `j`/`k`) select, `Enter` confirms, `Esc` goes back, `r` rescans in the network
-list, `Tab` shows or hides the password while typing, `q` exits.
+list, `Tab` shows or hides the password while typing, `y`/`n` answer the confirmation, `q` exits.
 
 To ask for a password, `iwtui` registers itself as iwd's agent. If another program has already
 registered an agent (for example the tray applet), `iwtui` can still connect to open and saved

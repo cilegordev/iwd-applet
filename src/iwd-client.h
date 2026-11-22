@@ -24,8 +24,9 @@ typedef struct _IwdClient IwdClient;
 typedef void (*IwdClientChangedFunc)(IwdClient *client, gpointer user_data);
 typedef void (*IwdClientErrorFunc)(IwdClient *client, const char *message, gpointer user_data);
 
-/* error is NULL when the connection succeeded, otherwise iwd's error message. */
-typedef void (*IwdConnectDoneFunc)(IwdClient *client, const char *error, gpointer user_data);
+/* error is NULL when the operation succeeded, otherwise iwd's error message. */
+typedef void (*IwdDoneFunc)(IwdClient *client, const char *error, gpointer user_data);
+typedef IwdDoneFunc IwdConnectDoneFunc;
 
 IwdClient  *iwd_client_new(IwdClientChangedFunc changed, IwdClientErrorFunc error, gpointer user_data);
 void        iwd_client_free(IwdClient *c);
@@ -46,3 +47,16 @@ void iwd_client_connect_hidden(IwdClient *c, const char *ssid);
 void iwd_client_disconnect(IwdClient *c);
 void iwd_client_set_powered(IwdClient *c, gboolean powered);
 void iwd_client_forget(IwdClient *c, const char *known_path);
+/* Like iwd_client_forget(), but reports the result to done(). */
+void iwd_client_forget_async(IwdClient *c, const char *known_path,
+                             IwdDoneFunc done, gpointer user_data);
+
+/* A saved network. Unlike IwdNetwork, it does not have to be in range. */
+typedef struct {
+  char *path;  /* object path KnownNetwork */
+  char *name;  /* SSID */
+  char *type;  /* "open", "psk", "8021x" */
+} IwdKnownNetwork;
+
+/* Newly allocated list of all saved networks, sorted by name. Free with g_ptr_array_unref(). */
+GPtrArray *iwd_client_list_known_networks(IwdClient *c);
