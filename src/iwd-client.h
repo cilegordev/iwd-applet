@@ -24,6 +24,9 @@ typedef struct _IwdClient IwdClient;
 typedef void (*IwdClientChangedFunc)(IwdClient *client, gpointer user_data);
 typedef void (*IwdClientErrorFunc)(IwdClient *client, const char *message, gpointer user_data);
 
+/* error is NULL when the connection succeeded, otherwise iwd's error message. */
+typedef void (*IwdConnectDoneFunc)(IwdClient *client, const char *error, gpointer user_data);
+
 IwdClient  *iwd_client_new(IwdClientChangedFunc changed, IwdClientErrorFunc error, gpointer user_data);
 void        iwd_client_free(IwdClient *c);
 
@@ -36,6 +39,9 @@ char       *iwd_client_network_name(IwdClient *c, const char *network_path); /* 
 
 void iwd_client_scan(IwdClient *c);
 void iwd_client_connect(IwdClient *c, const char *network_path);
+/* Like iwd_client_connect(), but reports the result to done(). */
+void iwd_client_connect_async(IwdClient *c, const char *network_path,
+                              IwdConnectDoneFunc done, gpointer user_data);
 void iwd_client_connect_hidden(IwdClient *c, const char *ssid);
 void iwd_client_disconnect(IwdClient *c);
 void iwd_client_set_powered(IwdClient *c, gboolean powered);

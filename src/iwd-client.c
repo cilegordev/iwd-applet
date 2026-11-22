@@ -398,6 +398,48 @@ void iwd_client_connect(IwdClient *c, const char *network_path)
   g_object_unref(np);
 }
 
+typedef struct {
+  IwdClient *client;
+  IwdConnectDoneFunc done;
+  gpointer data;
+} ConnectCtx;
+
+static void connect_finished(GObject *src, GAsyncResult *res, gpointer user_data)
+{
+  ConnectCtx *ctx = user_data;
+  GError *err = NULL;
+  GVariant *r = g_dbus_proxy_call_finish(G_DBUS_PROXY(src), res, &err);
+
+  if (r) {
+    g_variant_unref(r);
+    ctx->done(ctx->client, NULL, ctx->data);
+  } else {
+    g_dbus_error_strip_remote_error(err);
+    ctx->done(ctx->client, err->message, ctx->data);
+    g_error_free(err);
+  }
+  g_free(ctx);
+}
+
+void iwd_client_connect_async(IwdClient *c, const char *network_path,
+                              IwdConnectDoneFunc done, gpointer user_data)
+{
+  GDBusProxy *np = c->mgr ? (GDBusProxy *) g_dbus_object_manager_get_interface(c->mgr, network_path, IF_NETWORK)
+                          : NULL;
+  if (!np) {
+    done(c, c->mgr ? "Network not found" : "iwd is not running", user_data);
+    return;
+  }
+
+  ConnectCtx *ctx = g_new0(ConnectCtx, 1);
+  ctx->client = c;
+  ctx->done = done;
+  ctx->data = user_data;
+  /* Connect blocks until it finishes (including the passphrase request), so use a long timeout. */
+  g_dbus_proxy_call(np, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE, 120000, NULL, connect_finished, ctx);
+  g_object_unref(np);
+}
+
 void iwd_client_connect_hidden(IwdClient *c, const char *ssid)
 {
   if (c->station)
